@@ -8,8 +8,8 @@ use std::sync::{
     Arc,
 };
 
-use parking_lot::{Mutex, RwLock};
 use metrics_exporter_prometheus::PrometheusHandle;
+use parking_lot::{Mutex, RwLock};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use tokio::sync::{broadcast, mpsc};
@@ -69,6 +69,8 @@ pub struct AppState {
     /// Background simulator runtime state (testing mode).
     /// The worker loop runs independently from browser sessions.
     pub simulator: Arc<Mutex<SimulatorState>>,
+    /// Development-only runtime mode and server-owned role configuration.
+    pub policy: super::policy::RuntimePolicy,
 }
 
 impl AppState {
@@ -76,6 +78,7 @@ impl AppState {
         db: PgPool,
         events: mpsc::Sender<PersistenceEvent>,
         metrics: PrometheusHandle,
+        policy: super::policy::RuntimePolicy,
     ) -> Result<Self, sqlx::Error> {
         let (broadcast_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         let ledger = bootstrap_ledger(&db).await.map_err(|e| match e {
@@ -85,20 +88,22 @@ impl AppState {
             }
         })?;
         let total_user_usdt = load_total_user_usdt(&db).await?;
-        let exchange_funds = ExchangeFunds::new(Decimal::from(EXCHANGE_BASE_CAPITAL_USDT), total_user_usdt);
+        let exchange_funds =
+            ExchangeFunds::new(Decimal::from(EXCHANGE_BASE_CAPITAL_USDT), total_user_usdt);
 
         Ok(Self {
-            engine:        Arc::new(RwLock::new(Engine::new())),
+            engine: Arc::new(RwLock::new(Engine::new())),
             next_order_id: Arc::new(AtomicU64::new(1)),
             db,
             events,
-            order_users:   Arc::new(Mutex::new(HashMap::new())),
-            ledger:        Arc::new(Mutex::new(ledger)),
+            order_users: Arc::new(Mutex::new(HashMap::new())),
+            ledger: Arc::new(Mutex::new(ledger)),
             exchange_funds: Arc::new(Mutex::new(exchange_funds)),
             last_trade_price: Arc::new(Mutex::new(HashMap::new())),
-            broadcast:     broadcast_tx,
+            broadcast: broadcast_tx,
             metrics,
             simulator: Arc::new(Mutex::new(SimulatorState::default())),
+            policy,
         })
     }
 
@@ -224,15 +229,39 @@ impl SimulatorState {
 impl Default for SimulatorState {
     fn default() -> Self {
         let pair_stats = HashMap::from([
-            ("BTC_USDT".to_string(), SimulatorPairStats { orders: 0, fills: 0 }),
-            ("ETH_USDT".to_string(), SimulatorPairStats { orders: 0, fills: 0 }),
-            ("SOL_USDT".to_string(), SimulatorPairStats { orders: 0, fills: 0 }),
-            ("BNB_USDT".to_string(), SimulatorPairStats { orders: 0, fills: 0 }),
+            (
+                "BTC_USDT".to_string(),
+                SimulatorPairStats {
+                    orders: 0,
+                    fills: 0,
+                },
+            ),
+            (
+                "ETH_USDT".to_string(),
+                SimulatorPairStats {
+                    orders: 0,
+                    fills: 0,
+                },
+            ),
+            (
+                "SOL_USDT".to_string(),
+                SimulatorPairStats {
+                    orders: 0,
+                    fills: 0,
+                },
+            ),
+            (
+                "BNB_USDT".to_string(),
+                SimulatorPairStats {
+                    orders: 0,
+                    fills: 0,
+                },
+            ),
         ]);
 
         Self {
-            // Start automatically so simulator keeps running without browser interaction.
-            running: true,
+            // Synthetic writes require an explicit admin action in demo mode.
+            running: false,
             profile: SimulatorProfile::Turbo,
             ticks: 0,
             total_orders: 0,

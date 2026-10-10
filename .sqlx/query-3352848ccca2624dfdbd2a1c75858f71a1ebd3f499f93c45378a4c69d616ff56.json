@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users (id, username, display_name, is_suspended) VALUES\n        (900001, 'policy_admin', 'policy_admin', FALSE),\n        (900002, 'policy_user', 'policy_user', FALSE),\n        (900003, 'policy_suspended', 'policy_suspended', TRUE)\n        ON CONFLICT (id) DO UPDATE SET is_suspended = EXCLUDED.is_suspended",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "3352848ccca2624dfdbd2a1c75858f71a1ebd3f499f93c45378a4c69d616ff56"
+}

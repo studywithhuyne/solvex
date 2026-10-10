@@ -5,38 +5,39 @@ use matching_engine::db::{pool, worker};
 use matching_engine::observability::metrics as observability_metrics;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
-    tracing::info!("Matching Engine starting..."); 
+    tracing::info!("Matching Engine starting...");
 
-    let metrics_handle = observability_metrics::install_prometheus_recorder()
-        .expect("Failed to initialise Prometheus recorder");
+    let policy = matching_engine::api::policy::RuntimePolicy::from_env()?;
+    let metrics_handle = observability_metrics::install_prometheus_recorder()?;
     tracing::info!("Prometheus metrics recorder ready");
 
     // ── DB layer ──────────────────────────────────────────────────────────────
-    let db_pool = pool::create_pool()
-        .await
-        .expect("Failed to initialise database pool");
+    let db_pool = pool::create_pool().await?;
     tracing::info!("Database pool ready (max_connections=5, migrations applied)");
 
     let (events_tx, _worker_handle) =
         worker::spawn_persistence_worker(db_pool.clone(), worker::WORKER_BUFFER);
-    tracing::info!("Persistence worker spawned (buffer={})", worker::WORKER_BUFFER);
+    tracing::info!(
+        "Persistence worker spawned (buffer={})",
+        worker::WORKER_BUFFER
+    );
 
     // ── Axum server ───────────────────────────────────────────────────────────
-    let app_state = AppState::new(db_pool, events_tx, metrics_handle)
-        .await
-        .expect("Failed to bootstrap app state");
-    let _simulator_handle = matching_engine::api::simulator::spawn_simulator_worker(app_state.clone());
-    tracing::info!("Background simulator worker spawned");
+    let app_state = AppState::new(db_pool, events_tx, metrics_handle, policy).await?;
+    if app_state.policy.mode == matching_engine::api::policy::RuntimeMode::Demo {
+        let _simulator_handle =
+            matching_engine::api::simulator::spawn_simulator_worker(app_state.clone());
+        tracing::info!("Background simulator available; explicit start required");
+    }
     let app = router::build_router(app_state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
-        .await
-        .expect("Failed to bind port 3000");
-    tracing::info!("Listening on http://0.0.0.0:3000");
+    let bind_address =
+        std::env::var("CEX_BIND_ADDRESS").unwrap_or_else(|_| "127.0.0.1:3000".into());
+    let listener = tokio::net::TcpListener::bind(&bind_address).await?;
+    tracing::info!(%bind_address, "HTTP listener ready");
 
-    axum::serve(listener, app)
-        .await
-        .expect("Server error");
+    axum::serve(listener, app).await?;
+    Ok(())
 }

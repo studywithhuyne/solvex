@@ -1,26 +1,24 @@
 ﻿import { writable } from "svelte/store";
 
-export const adminAuthState = writable({
+export const adminAuthState = writable<{ isLoggedIn: boolean; userId: string | null }>({
   isLoggedIn: false,
+  userId: null,
 });
 
-export const loginAdmin = (username?: string, password?: string) => {
-  if (username === "admin" && password === "admin") {
-    adminAuthState.set({ isLoggedIn: true });
-    localStorage.setItem("admin_token", "true");
-    return true;
-  }
-  return false;
+// The server owns demo roles. Declared IDs are still impersonable.
+export const loginAdmin = async (userId: string) => {
+  if (!/^[1-9]\d*$/.test(userId)) return false;
+  const response = await fetch("/api/admin/metrics", { headers: { "x-user-id": userId } });
+  adminAuthState.set({ isLoggedIn: response.ok, userId: response.ok ? userId : null });
+  return response.ok;
 };
 
 export const logoutAdmin = () => {
-  adminAuthState.set({ isLoggedIn: false });
-  localStorage.removeItem("admin_token");
+  adminAuthState.set({ isLoggedIn: false, userId: null });
 };
 
 export const bootstrapAdminAuth = () => {
-  if (localStorage.getItem("admin_token") === "true") {
-    adminAuthState.set({ isLoggedIn: true });
-  }
+  // Local storage must never authorize a server-owned role.
+  logoutAdmin();
 };
 

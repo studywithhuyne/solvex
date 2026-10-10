@@ -10,7 +10,7 @@ use argon2::{
 use axum::{
     async_trait,
     extract::{FromRequestParts, State},
-    http::{request::Parts, StatusCode},
+    http::{request::Parts, HeaderMap, StatusCode},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -76,28 +76,40 @@ where
     type Rejection = (StatusCode, Json<Value>);
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // 1. Header must be present.
-        let header_val = parts
-            .headers
-            .get("x-user-id")
-            .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing x-user-id header"))?;
-
-        // 2. Header value must be valid ASCII/UTF-8.
-        let str_val = header_val
-            .to_str()
-            .map_err(|_| err(StatusCode::BAD_REQUEST, "x-user-id must be valid ASCII"))?;
-
-        // 3. Value must parse as a non-zero u64.
-        let user_id = str_val
-            .parse::<u64>()
-            .map_err(|_| err(StatusCode::BAD_REQUEST, "x-user-id must be a positive integer (u64)"))?;
-
-        if user_id == 0 {
-            return Err(err(StatusCode::BAD_REQUEST, "x-user-id must be greater than 0"));
-        }
-
-        Ok(UserId(user_id))
+        parse_user_id(&parts.headers).map(UserId)
     }
+}
+
+pub fn parse_user_id(headers: &HeaderMap) -> Result<u64, (StatusCode, Json<Value>)> {
+    if headers.get_all("x-user-id").iter().count() > 1 {
+        return Err(err(StatusCode::BAD_REQUEST, "duplicate x-user-id header"));
+    }
+    // 1. Header must be present.
+    let header_val = headers
+        .get("x-user-id")
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing x-user-id header"))?;
+
+    // 2. Header value must be valid ASCII/UTF-8.
+    let str_val = header_val
+        .to_str()
+        .map_err(|_| err(StatusCode::BAD_REQUEST, "x-user-id must be valid ASCII"))?;
+
+    // 3. Value must parse as a non-zero u64.
+    let user_id = str_val.parse::<u64>().map_err(|_| {
+        err(
+            StatusCode::BAD_REQUEST,
+            "x-user-id must be a positive integer (u64)",
+        )
+    })?;
+
+    if user_id == 0 {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "x-user-id must be greater than 0",
+        ));
+    }
+
+    Ok(user_id)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -135,23 +147,23 @@ pub async fn register_handler(
          FROM users
          WHERE id > 0 AND id <= $1",
     )
-        .bind(MAX_JS_SAFE_INTEGER_I64)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db_err)?;
+    .bind(MAX_JS_SAFE_INTEGER_I64)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db_err)?;
 
     if next_id <= 0 || next_id > MAX_JS_SAFE_INTEGER_I64 {
         return Err(internal("generated invalid user id"));
     }
 
     let inserted = sqlx::query(
-           "INSERT INTO users (id, username, display_name, password_hash)
+        "INSERT INTO users (id, username, display_name, password_hash)
             VALUES ($1, $2, $3, $4)
          ON CONFLICT (username) DO NOTHING",
     )
     .bind(next_id)
     .bind(&username)
-        .bind(&username)
+    .bind(&username)
     .bind(&password_hash)
     .execute(&mut *tx)
     .await
@@ -201,7 +213,8 @@ pub async fn login_handler(
     .await
     .map_err(db_err)?;
 
-    let (id, db_username, db_display_name, password_hash) = row.ok_or_else(|| unauthorized("invalid username or password"))?;
+    let (id, db_username, db_display_name, password_hash) =
+        row.ok_or_else(|| unauthorized("invalid username or password"))?;
     let stored_hash = password_hash.ok_or_else(|| unauthorized("invalid username or password"))?;
 
     verify_password(&body.password, &stored_hash)?;
@@ -222,10 +235,10 @@ pub async fn me_handler(
          FROM users
          WHERE id = $1",
     )
-        .bind(user_id as i64)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(db_err)?;
+    .bind(user_id as i64)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(db_err)?;
 
     let (username, display_name) = row.ok_or_else(|| unauthorized("invalid x-user-id"))?;
     Ok(Json(auth_response(user_id, username, display_name)))
@@ -311,7 +324,10 @@ fn err(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
 
 #[inline]
 fn db_err(e: sqlx::Error) -> ApiError {
-    err(StatusCode::INTERNAL_SERVER_ERROR, &format!("database error: {e}"))
+    err(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        &format!("database error: {e}"),
+    )
 }
 
 #[inline]

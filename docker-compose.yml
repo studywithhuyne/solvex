@@ -12,7 +12,7 @@ services:
       POSTGRES_DB: cex_db
       PGTZ: UTC
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Init scripts run once on first container start (alphabetical order)
@@ -35,6 +35,9 @@ services:
     environment:
       DATABASE_URL: postgres://admin:admin@db:5432/cex_db
       RUST_LOG: info
+      CEX_MODE: ${CEX_MODE:-maintenance}
+      CEX_ADMIN_USER_IDS: ${CEX_ADMIN_USER_IDS:-}
+      CEX_BIND_ADDRESS: 0.0.0.0:3000
       BINANCE_API_BASE_URL: ${BINANCE_API_BASE_URL:-https://api.binance.com/api/v3}
       BINANCE_API_KEY: ${BINANCE_API_KEY:-}
       BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
@@ -47,11 +50,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
-    # Port 3000 is also exposed for direct API access / debugging.
-    # Remove this mapping in a hardened production environment
-    # (traffic should only enter through the Nginx proxy on port 8080).
-    ports:
-      - "3000:3000"
+    # API is only reachable through project-network peers and Nginx ingress.
     networks:
       - cex_net
 
@@ -65,7 +64,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
     networks:
       - cex_net
 
@@ -83,7 +82,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     networks:
       - cex_net
 
@@ -102,7 +101,7 @@ services:
     depends_on:
       - prometheus
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     networks:
       - cex_net
 

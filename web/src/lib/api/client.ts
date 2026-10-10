@@ -1,3 +1,15 @@
+import { get } from "svelte/store";
+import { adminAuthState } from "../../stores/adminAuthStore";
+
+function declaredUserId(path: string, userId: AuthUserId): string {
+  if (path.startsWith("/api/admin/")) {
+    const actor = get(adminAuthState).userId;
+    if (!actor) throw new Error("Select a declared admin ID and check server policy first.");
+    return actor;
+  }
+  return String(userId);
+}
+
 const DEFAULT_HEADERS = {
   "Content-Type": "application/json",
 };
@@ -9,7 +21,7 @@ export async function apiGet<T = unknown>(path: string, userId: AuthUserId = 1):
     method: "GET",
     headers: {
       ...DEFAULT_HEADERS,
-      "x-user-id": String(userId),
+      "x-user-id": declaredUserId(path, userId),
     },
   });
 
@@ -29,7 +41,7 @@ export async function apiPost<T = unknown>(
     method: "POST",
     headers: {
       ...DEFAULT_HEADERS,
-      "x-user-id": String(userId),
+      "x-user-id": declaredUserId(path, userId),
     },
     body: JSON.stringify(body),
   });
@@ -51,7 +63,7 @@ export async function apiPut<T = unknown>(
     method: "PUT",
     headers: {
       ...DEFAULT_HEADERS,
-      "x-user-id": String(userId),
+      "x-user-id": declaredUserId(path, userId),
     },
     body: JSON.stringify(body),
   });
@@ -67,7 +79,7 @@ export async function apiPut<T = unknown>(
 export async function apiDelete(path: string, userId: AuthUserId = 1): Promise<void> {
   const response = await fetch(path, {
     method: "DELETE",
-    headers: { "x-user-id": String(userId) },
+    headers: { "x-user-id": declaredUserId(path, userId) },
   });
 
   if (!response.ok) {
