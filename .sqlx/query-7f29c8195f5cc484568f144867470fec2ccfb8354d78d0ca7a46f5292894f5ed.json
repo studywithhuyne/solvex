@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT snapshot_id, root_hash, users_included, created_at FROM zkp_snapshots ORDER BY created_at DESC LIMIT 20",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "snapshot_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "root_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "users_included",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7f29c8195f5cc484568f144867470fec2ccfb8354d78d0ca7a46f5292894f5ed"
+}

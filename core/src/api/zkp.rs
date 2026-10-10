@@ -36,6 +36,9 @@ pub struct ZkpProofQuery {
 
 #[derive(Debug, Serialize)]
 pub struct ZkpProofResponse {
+    pub protocol_version: u32,
+    pub statement: &'static str,
+    pub verification_status: &'static str,
     pub user_id: String,
     pub asset: String,
     pub snapshot_size: usize,
@@ -67,7 +70,7 @@ pub struct ZkpSolvencyDto {
     pub total_liabilities: String,
     pub compared_assets: String,
     pub assets_source: String,
-    pub verified_at: String,
+    pub computed_at: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -123,7 +126,8 @@ pub async fn proof_handler(
         });
     }
 
-    let user_leaf_index = user_leaf_index.ok_or_else(|| not_found("user balance not found for selected asset"))?;
+    let user_leaf_index =
+        user_leaf_index.ok_or_else(|| not_found("user balance not found for selected asset"))?;
 
     let tree = build_poseidon_merkle_sum_tree(&snapshots)
         .map_err(|e| internal_error_msg(&format!("failed to build solvency tree: {e}")))?;
@@ -143,16 +147,20 @@ pub async fn proof_handler(
         proof.leaf.balance,
     )?;
 
-    let solvency = resolve_effective_assets_optional(&state, &asset, query.cold_wallet_assets.as_deref())?
-        .map(|resolved| ZkpSolvencyDto {
-            liabilities_leq_assets: proof.root.balance <= resolved.assets,
-            total_liabilities: proof.root.balance.to_string(),
-            compared_assets: resolved.assets.to_string(),
-            assets_source: resolved.source,
-            verified_at: chrono::Utc::now().to_rfc3339(),
-        });
+    let solvency =
+        resolve_effective_assets_optional(&state, &asset, query.cold_wallet_assets.as_deref())?
+            .map(|resolved| ZkpSolvencyDto {
+                liabilities_leq_assets: proof.root.balance <= resolved.assets,
+                total_liabilities: proof.root.balance.to_string(),
+                compared_assets: resolved.assets.to_string(),
+                assets_source: resolved.source,
+                computed_at: chrono::Utc::now().to_rfc3339(),
+            });
 
     Ok(Json(ZkpProofResponse {
+        protocol_version: 1,
+        statement: "leaf_commitment",
+        verification_status: "unverified",
         user_id: user_id.to_string(),
         asset,
         snapshot_size: tree.original_leaf_count(),
@@ -268,7 +276,10 @@ fn resolve_effective_assets(
     ))
 }
 
-fn parse_decimal(value: &str, err_prefix: &str) -> Result<Decimal, (StatusCode, Json<serde_json::Value>)> {
+fn parse_decimal(
+    value: &str,
+    err_prefix: &str,
+) -> Result<Decimal, (StatusCode, Json<serde_json::Value>)> {
     let decimal = value.parse::<Decimal>().map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
@@ -279,7 +290,9 @@ fn parse_decimal(value: &str, err_prefix: &str) -> Result<Decimal, (StatusCode, 
     if decimal.is_sign_negative() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": format!("{err_prefix}: value must be non-negative") })),
+            Json(
+                serde_json::json!({ "error": format!("{err_prefix}: value must be non-negative") }),
+            ),
         ));
     }
 
@@ -292,6 +305,9 @@ fn parse_decimal(value: &str, err_prefix: &str) -> Result<Decimal, (StatusCode, 
 
 #[derive(Debug, Serialize)]
 pub struct ZkpSolvencyResponse {
+    pub protocol_version: u32,
+    pub statement: &'static str,
+    pub evidence_status: &'static str,
     pub asset: String,
     pub snapshot_size: usize,
     pub root_hash: String,
@@ -299,7 +315,7 @@ pub struct ZkpSolvencyResponse {
     pub compared_assets: String,
     pub assets_source: String,
     pub liabilities_leq_assets: bool,
-    pub verified_at: String,
+    pub computed_at: String,
 }
 
 pub async fn solvency_handler(
@@ -344,13 +360,17 @@ pub async fn solvency_handler(
         .map_err(|e| internal_error_msg(&format!("failed to build solvency tree: {e}")))?;
 
     let root = tree.root();
-    let resolved_assets = resolve_effective_assets(&state, &asset, query.cold_wallet_assets.as_deref())?;
+    let resolved_assets =
+        resolve_effective_assets(&state, &asset, query.cold_wallet_assets.as_deref())?;
     let total_liabilities = root.balance;
     let liabilities_leq_assets = total_liabilities <= resolved_assets.assets;
 
     let verified_at = chrono::Utc::now().to_rfc3339();
 
     Ok(Json(ZkpSolvencyResponse {
+        protocol_version: 1,
+        statement: "simulated_comparison",
+        evidence_status: "unverified",
         asset,
         snapshot_size: tree.original_leaf_count(),
         root_hash: hash_to_hex(&root.hash),
@@ -358,7 +378,7 @@ pub async fn solvency_handler(
         compared_assets: resolved_assets.assets.to_string(),
         assets_source: resolved_assets.source,
         liabilities_leq_assets,
-        verified_at,
+        computed_at: verified_at,
     }))
 }
 
@@ -390,5 +410,8 @@ fn internal_error_msg(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
 
 #[inline]
 fn not_found(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
-    (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": msg })))
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "error": msg })),
+    )
 }

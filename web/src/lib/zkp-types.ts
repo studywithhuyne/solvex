@@ -1,6 +1,8 @@
 // zkp-types.ts — Shared TypeScript types for ZKP verification panels.
 
 export type ProofPayload = {
+  protocol_version: number;
+  statement: string;
   user_id: string;
   leaf_balance?: string;
   root_hash: string;
@@ -8,7 +10,7 @@ export type ProofPayload = {
     scheme: string;
     proof: string;
     public_inputs: string;
-    verified: boolean;
+    verified?: boolean;
   };
   public_inputs?: {
     expected_root_hash: string;
@@ -29,4 +31,4 @@ export type RawProofPayload = {
   solvency?: ProofPayload["solvency"];
 };
 
-export type VerifyStatus = "idle" | "fetching" | "verifying" | "valid" | "invalid" | "error";
+export type VerifyStatus = "idle" | "fetching" | "verifying" | "unverified" | "unsupported" | "unavailable" | "invalid" | "error";

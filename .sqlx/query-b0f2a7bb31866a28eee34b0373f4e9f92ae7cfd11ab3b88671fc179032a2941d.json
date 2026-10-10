@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO zkp_snapshots (snapshot_id, root_hash, users_included) VALUES ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b0f2a7bb31866a28eee34b0373f4e9f92ae7cfd11ab3b88671fc179032a2941d"
+}

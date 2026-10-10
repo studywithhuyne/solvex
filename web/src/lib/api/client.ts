@@ -315,7 +315,7 @@ export type TreasuryMetrics = {
 };
 export type AdminAssetDto = { symbol: string; name: string; decimals: number; is_active: boolean; };
 export type AdminUserDto = { user_id: number; username: string; is_suspended: boolean; };
-export type ZkSnapshotDto = { snapshot_id: string; root_hash: string; users_included: number; created_at: string; };
+export type ZkSnapshotDto = { snapshot_id: string; root_hash: string; users_observed: number; created_at: string; snapshot_kind: "simulated" | "legacy_unverified"; verification_status: "unverified"; trusted: false; };
 export type AdminTreasuryAdjustResponse = {
   ok: boolean;
   action: "deposit" | "withdraw";

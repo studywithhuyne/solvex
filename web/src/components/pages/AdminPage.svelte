@@ -185,10 +185,10 @@
   }
 
   async function handleZkpSnapshot() {
-    if (!confirm("Are you sure you want to trigger a global balance snapshot for ZKP?")) return;
+    if (!confirm("Create a simulated demo record? This will not generate a cryptographic snapshot.")) return;
     try {
       await triggerZkpSnapshot();
-      message = `Snapshot triggered successfully.`;
+      message = `Simulated record created; no verified snapshot was produced.`;
       loadZkp();
       setTimeout(() => message = null, 3000);
     } catch (e: any) {
@@ -450,17 +450,17 @@
         <h2 class="text-xs font-medium text-slate-400 mb-4 uppercase tracking-widest border-b border-slate-800 pb-2">ZKP Audit Operations</h2>
         <div class="py-8">
           <p class="text-sm text-slate-300 mb-6 max-w-sm mx-auto leading-relaxed">
-            Triggering a Snapshot will collect the balances of all users alongside the main exchange wallet to construct a new Merkle Sum Tree. This is required before users can verify their Proof of Solvency.
+            This action records demo activity only. It does not capture an immutable ledger snapshot, construct a cryptographic root or prove solvency.
           </p>
           <button class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-lg text-sm font-semibold tracking-wide transition-all shadow-[0_0_15px_rgba(79,70,229,0.3)] hover:shadow-[0_0_20px_rgba(79,70,229,0.5)]"
             onclick={handleZkpSnapshot}>
-            CRON: Execute Snapshot & Hash
+            Create Simulated Record
           </button>
         </div>
       </div>
 
       <div class="terminal-panel p-5">
-        <h2 class="text-xs font-medium text-slate-400 mb-4 uppercase tracking-widest border-b border-slate-800 pb-2">Recent ZKP Snapshots</h2>
+        <h2 class="text-xs font-medium text-slate-400 mb-4 uppercase tracking-widest border-b border-slate-800 pb-2">Simulated / Unverified History</h2>
         <div class="space-y-3 max-h-100 overflow-y-auto pr-2 custom-scrollbar">
           {#each zkpHistory as snap}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -474,7 +474,7 @@
                 <span class="text-[10px] text-slate-500">{new Date(snap.created_at).toLocaleString()}</span>
               </div>
               <div class="flex items-center justify-between border-t border-slate-800/50 pt-2">
-                <span class="text-xs text-slate-400">Users: <span class="text-slate-200">{snap.users_included}</span></span>
+                <span class="text-xs text-slate-400">Users observed: <span class="text-slate-200">{snap.users_observed}</span> · {snap.snapshot_kind} · unverified</span>
                 <span class="text-xs text-indigo-400 truncate max-w-37.5 font-mono">{snap.root_hash}</span>
               </div>
             </div>
@@ -512,13 +512,13 @@
                 <p class="text-slate-200">{new Date(selectedSnapshot.created_at).toLocaleString()}</p>
               </div>
               <div>
-                <p class="text-slate-500 text-[10px] uppercase tracking-widest mb-1">Users Included</p>
-                <p class="text-slate-200 font-mono">{selectedSnapshot.users_included}</p>
+                <p class="text-slate-500 text-[10px] uppercase tracking-widest mb-1">Users Observed (Not Verified Inclusion)</p>
+                <p class="text-slate-200 font-mono">{selectedSnapshot.users_observed}</p>
               </div>
             </div>
 
             <div>
-              <p class="text-slate-500 text-[10px] uppercase tracking-widest mb-1">Merkle Sum Tree Root Hash</p>
+              <p class="text-slate-500 text-[10px] uppercase tracking-widest mb-1">Untrusted Legacy / Simulated Value — {selectedSnapshot.snapshot_kind}</p>
               <div class="bg-slate-900 p-3 rounded border border-slate-800 text-indigo-400 font-mono break-all text-sm leading-relaxed">
                 {selectedSnapshot.root_hash}
               </div>

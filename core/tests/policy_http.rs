@@ -132,6 +132,41 @@ async fn policy_is_enforced_by_the_real_http_router() {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         if mode == "demo" {
             let response = client
+                .post(format!("{base}/api/admin/zkp/snapshot"))
+                .header("x-user-id", "900001")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let snapshot: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(snapshot["status"], "simulated");
+            assert_eq!(snapshot["trusted"], false);
+            let history: serde_json::Value = client
+                .get(format!("{base}/api/admin/zkp/history"))
+                .header("x-user-id", "900001")
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            for row in history.as_array().unwrap() {
+                assert_eq!(row["trusted"], false);
+                assert_eq!(row["verification_status"], "unverified");
+            }
+            let response: serde_json::Value = client
+                .get(format!(
+                    "{base}/api/zkp/solvency?asset=USDT&cold_wallet_assets=999999999"
+                ))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(response["statement"], "simulated_comparison");
+            assert_eq!(response["evidence_status"], "unverified");
+            let response = client
                 .put(format!("{base}/api/admin/users/900001/suspend"))
                 .header("x-user-id", "900001")
                 .send()

@@ -17,19 +17,24 @@ Phase,Task_ID,Task_Name,Description,Status
 3. API Gateway (Axum),API-03,REST: Order Endpoints,"Implement POST /api/orders (đặt lệnh), DELETE /api/orders/:id (hủy lệnh)",DONE
 3. API Gateway (Axum),API-04,REST: Data Endpoints,"Implement GET /api/orderbook (trả về top 50 depth), GET /api/balances",DONE
 3. API Gateway (Axum),API-05,WebSocket Broadcaster,"Dùng tokio::sync::broadcast. Bắn JSON update (OrderBook diff, Recent Trades) xuống clients",DONE
-4. ZKP Solvency,ZKP-01,Merkle Node Struct,"Định nghĩa Node chứa Hash và Decimal Balance. Khởi tạo mảng Leaves từ DB snapshots",DONE
-4. ZKP Solvency,ZKP-02,Poseidon Hash Logic,"Tích hợp Poseidon Hash từ arkworks/halo2 để băm (Left_Hash + Right_Hash + Left_Bal + Right_Bal)",DONE
-4. ZKP Solvency,ZKP-03,Merkle Tree Builder,"Thuật toán build cây từ dưới lên (Bottom-up). Tính Merkle Root",DONE
-4. ZKP Solvency,ZKP-04,ZK Circuit Design,"Định nghĩa ráng buộc (Constraints): Hash hợp lệ, Sum = Left + Right, không tràn số (Overflow)",DONE
-4. ZKP Solvency,ZKP-05,Prover API,"API GET /api/zkp/proof. Generate bằng chứng (Proof) và Merkle Path cho user đang request",DONE
-4. ZKP Solvency,ZKP-06,Wasm Verifier,"Tạo project wasm-pack. Viết hàm verify_proof nhận file .proof và public_inputs, trả về boolean",DONE
+4. ZKP Solvency,ZKP-01,Merkle Node Struct,"Định nghĩa Node chứa Hash và Decimal Balance. Khởi tạo mảng Leaves từ DB snapshots",PROTOTYPE
+4. ZKP Solvency,ZKP-02,Poseidon Hash Logic,"Tích hợp Poseidon Hash từ arkworks/halo2 để băm (Left_Hash + Right_Hash + Left_Bal + Right_Bal)",PROTOTYPE
+4. ZKP Solvency,ZKP-03,Merkle Tree Builder,"Thuật toán build cây từ dưới lên (Bottom-up). Tính Merkle Root",PROTOTYPE
+4. ZKP Solvency,ZKP-04,ZK Circuit Design,"Định nghĩa ráng buộc (Constraints): Hash hợp lệ, Sum = Left + Right, không tràn số (Overflow)",PROTOTYPE
+4. ZKP Solvency,ZKP-05,Prover API,"API GET /api/zkp/proof. Generate bằng chứng (Proof) và Merkle Path cho user đang request",PROTOTYPE
+4. ZKP Solvency,ZKP-06,Wasm Verifier,"Tạo project wasm-pack. Viết hàm verify_proof nhận file .proof và public_inputs, trả về boolean",PROTOTYPE
 5. Frontend (Svelte),UI-01,Vite SPA Init,"Khởi tạo project Vite + Svelte, setup TailwindCSS config, tạo layout Dark Mode",DONE
 5. Frontend (Svelte),UI-02,Store: WebSocket,"Tạo Svelte writable store kết nối Ws://, hứng data, update local OrderBook object",DONE
 5. Frontend (Svelte),UI-03,Component: OrderBook,"Vẽ UI Bids (chữ xanh) và Asks (chữ đỏ), render thanh Depth/Size background",DONE
 5. Frontend (Svelte),UI-04,Component: Trade Form,"Form Input Price, Amount. Nút Buy (màu xanh), Sell (màu đỏ). Gọi REST POST /api/orders",DONE
 5. Frontend (Svelte),UI-05,Component: User Header,"Dropdown chọn User ID giả lập (VD: Alice - ID 1, Bob - ID 2) để gán vào x-user-id header",DONE
-5. Frontend (Svelte),UI-06,Component: ZK Verifier,"Giao diện upload/fetch file proof. Gọi module Wasm (wasm-bindgen). Hiển thị kết quả Valid/Invalid",DONE
+5. Frontend (Svelte),UI-06,Component: ZK Verifier,"Giao diện upload/fetch file proof. Gọi module Wasm (wasm-bindgen). Hiển thị kết quả Valid/Invalid",PROTOTYPE
 6. DevOps & Infra,OPS-01,Backend Dockerfile,"Multi-stage build cho Rust: Builder image (compile) -> Alpine/Distroless image (run)",DONE
 6. DevOps & Infra,OPS-02,Frontend Dockerfile,"Build Svelte Vite ra thư mục dist/, copy vào Nginx alpine image",DONE
 6. DevOps & Infra,OPS-03,Nginx Config,"Viết nginx.conf: proxy_pass /api, proxy_pass /ws (upgrade headers), try_files cho file tĩnh",DONE
 6. DevOps & Infra,OPS-04,Full Docker Compose,"Gộp Postgres, Backend, Frontend vào mạng chung (docker network), test full luồng",DONE
+7. Improvement Batch 1,PLAN-01,Contracts and decisions,"Demo/money/ACK/privacy/migration contracts in docs/DECISIONS.md; future runtime guarantees are not active",DOCUMENTED
+7. Improvement Batch 1,PLAN-02,Accounting and performance baseline,"71 Rust tests and 14 Criterion workloads; known odd-tree defect remains explicit",VERIFIED_BASELINE
+7. Improvement Batch 1,PLAN-03,Demo mode and server policy,"Real HTTP/PostgreSQL policy tests; suspend ordering awaits PLAN-10",INTEGRATED
+7. Improvement Batch 1,PLAN-04,Truthful proof status,"Fail-closed shared parser; simulated snapshots; no local SNARK verifier or trusted reserves",INTEGRATED
+7. Improvement Batch 1,PLAN-05,Locked builds and quality gates,"Dependency locks, Docker and mandatory pre-publish checks",PENDING

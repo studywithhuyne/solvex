@@ -17,6 +17,8 @@
 
 All-in-one monorepo containing a Rust in-memory matching engine, async Postgres persistence, and ZK proof tooling.
 
+Development/test only: identity is declared through `x-user-id` and remains impersonable. The default mode is read-only `maintenance`; opt in to `CEX_MODE=demo` only with disposable data and configure `CEX_ADMIN_USER_IDS` on the server. Financial durability/recovery gates are still pending. ZKP responses are prototypes: the UI does not claim verified inclusion, aggregate liabilities, reserve evidence or solvency. Admin snapshot records are simulated/unverified. See `docs/IMPLEMENTATION_PROGRESS.md` and `docs/PROOF_STATUS.md`.
+
 ## Quick Links
 
 - `core/` — Rust backend (engine, API, db, observability)
@@ -34,8 +36,7 @@ Start the full local runtime using Docker Compose (recommended):
 # First time only
 Copy-Item .env.example .env
 
-# If DB migrations changed, reset metadata
-docker compose down -v
+# Migrations apply automatically; preserve existing database volumes.
 
 # Build and start all services
 docker compose up -d --build
