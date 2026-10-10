@@ -17,7 +17,8 @@ use rust_decimal_macros::dec;
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn mk_order(id: u64, side: Side, price: Decimal, amount: Decimal) -> Order {
-    Order::new(id, 1, "BTC_USDT", side, price, amount)
+    // Distinct maker/taker identities keep self-trade prevention out of fill workloads.
+    Order::new(id, id, "BTC_USDT", side, price, amount)
 }
 
 // ── add_order ────────────────────────────────────────────────────────────────
