@@ -120,7 +120,7 @@ fn failpoint_script_distinguishes_storage_and_ack_boundaries() {
 }
 
 #[test]
-fn known_failure_odd_tree_duplicates_funded_leaf() {
+fn odd_tree_does_not_duplicate_funded_leaf() {
     use zkp::tree::{build_poseidon_merkle_sum_tree, BalanceSnapshot};
     let leaves = [10, 5, 7]
         .into_iter()
@@ -131,9 +131,8 @@ fn known_failure_odd_tree_duplicates_funded_leaf() {
         })
         .collect::<Vec<_>>();
     let tree = build_poseidon_merkle_sum_tree(&leaves).unwrap();
-    // Characterization of the legacy defect, not acceptance of correct total.
-    assert_eq!(tree.root().balance, dec!(29));
-    assert_ne!(tree.root().balance, dec!(22));
+    // PLAN-07: zero padding replaces the legacy duplicated-leaf behaviour (was 29).
+    assert_eq!(tree.root().balance, dec!(22));
 }
 
 proptest! {

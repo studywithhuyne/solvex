@@ -4,7 +4,7 @@ Ngày 10/10/2026. Fixture `core/tests/fixtures/baseline-v1.json` có 3 users, BT
 
 ## Phân biệt evidence với known failures
 
-- Test `known_failure_odd_tree_duplicates_funded_leaf` chỉ ghi nhận 10+5+7 đang ra 29. **Không phải tiêu chí Merkle đúng đã pass**; G-MATH vẫn blocked cho tới PLAN-07 sửa ra 22 và thay characterization bằng regression acceptance.
+- (Cập nhật PLAN-07) Test `known_failure_odd_tree_duplicates_funded_leaf` đã được thay bằng `odd_tree_does_not_duplicate_funded_leaf`: 10+5+7 = 22 với zero padding. Lịch sử: trước PLAN-07 kết quả là 29.
 - `FaultScript` là harness test-only mô tả điểm tiêm lỗi, chưa wire vào runtime. PLAN-11: lỗi sau từng SQL; PLAN-12: write/sync/truncated record; PLAN-14: snapshot/checksum/replay; PLAN-13/15: durable-before-ACK/timeout/hard crash. Không claim đã kiểm thử process kill bằng script này.
 - Whole-order atomicity, concurrent withdraw và restart replay chưa có contract/runtime mới; cần PLAN-09–15. Không dùng unit settlement atomic làm bằng chứng whole command.
 

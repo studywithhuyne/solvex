@@ -41,6 +41,15 @@ impl PriceLevel {
     }
 }
 
+/// One fill produced by a read-only match plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedFill {
+    pub trade: Trade,
+    /// Owner of the resting (maker) order, captured so records never need the book again.
+    pub maker_user_id: u64,
+    pub maker_remaining_after: Decimal,
+}
+
 pub struct OrderBook {
     bids: BTreeMap<Reverse<Decimal>, PriceLevel>,
     asks: BTreeMap<Decimal, PriceLevel>,
@@ -225,6 +234,189 @@ impl OrderBook {
         Ok(trades)
     }
 
+    /// Look up a resting order by id.
+    pub fn get_order(&self, order_id: u64) -> Option<&Order> {
+        let key = self.order_map.get(&order_id)?;
+        self.orders.get(*key).map(|node| &node.order)
+    }
+
+    /// Read-only match plan: the fills `match_order` would produce for `taker`, without
+    /// touching the book. Same rules: price-time priority, maker price, self-trade stop.
+    ///
+    /// Algorithm: walk crossing price levels best to worse; inside a level walk the FIFO
+    /// list; stop at the first self-owned resting order or when the taker is exhausted.
+    pub fn plan_match(&self, taker: &Order) -> Result<Vec<PlannedFill>, EngineError> {
+        if taker.price <= Decimal::ZERO {
+            return Err(EngineError::InvalidPrice(taker.price));
+        }
+        if taker.amount <= Decimal::ZERO {
+            return Err(EngineError::InvalidAmount(taker.amount));
+        }
+        if self.order_map.contains_key(&taker.id) {
+            return Err(EngineError::DuplicateOrderId(taker.id));
+        }
+
+        let mut remaining = taker.remaining;
+        let mut fills = Vec::new();
+
+        match taker.side {
+            Side::Buy => {
+                for (price, level) in self.asks.iter() {
+                    if *price > taker.price {
+                        break;
+                    }
+                    if self.plan_level(level, *price, taker, &mut remaining, &mut fills)? {
+                        break;
+                    }
+                }
+            }
+            Side::Sell => {
+                for (Reverse(price), level) in self.bids.iter() {
+                    if *price < taker.price {
+                        break;
+                    }
+                    if self.plan_level(level, *price, taker, &mut remaining, &mut fills)? {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(fills)
+    }
+
+    /// Returns `true` when planning must stop (taker exhausted or self-trade encountered).
+    fn plan_level(
+        &self,
+        level: &PriceLevel,
+        price: Decimal,
+        taker: &Order,
+        remaining: &mut Decimal,
+        fills: &mut Vec<PlannedFill>,
+    ) -> Result<bool, EngineError> {
+        let mut cursor = level.head;
+        while let Some(key) = cursor {
+            let node = self.orders.get(key).ok_or(EngineError::CorruptBook)?;
+            if node.order.user_id == taker.user_id {
+                return Ok(true);
+            }
+
+            let fill_qty = (*remaining).min(node.order.remaining);
+            *remaining -= fill_qty;
+            fills.push(PlannedFill {
+                trade: Trade {
+                    maker_order_id: node.order.id,
+                    taker_order_id: taker.id,
+                    symbol: taker.symbol.clone(),
+                    price,
+                    amount: fill_qty,
+                },
+                maker_user_id: node.order.user_id,
+                maker_remaining_after: node.order.remaining - fill_qty,
+            });
+
+            if remaining.is_zero() {
+                return Ok(true);
+            }
+            cursor = node.next;
+        }
+        Ok(false)
+    }
+
+    fn level_head(&self, side: Side, price: Decimal) -> Option<OrderKey> {
+        match side {
+            Side::Buy => self.bids.get(&Reverse(price)).and_then(|l| l.head),
+            Side::Sell => self.asks.get(&price).and_then(|l| l.head),
+        }
+    }
+
+    /// Dry-run check for a sequence of replayable fills `(maker_order_id, quantity)`.
+    ///
+    /// Every maker must exist, quantities must fit the (simulated) remaining quantity and each
+    /// fill must hit the front of its price level once earlier fills are accounted for.
+    pub fn validate_fills(&self, fills: &[(u64, Decimal)]) -> Result<(), EngineError> {
+        let mut simulated: HashMap<u64, Decimal> = HashMap::new();
+
+        for (order_id, quantity) in fills {
+            let key = self
+                .order_map
+                .get(order_id)
+                .copied()
+                .ok_or(EngineError::InvalidFill(*order_id))?;
+            let node = self.orders.get(key).ok_or(EngineError::CorruptBook)?;
+            let remaining = simulated
+                .get(order_id)
+                .copied()
+                .unwrap_or(node.order.remaining);
+            if *quantity <= Decimal::ZERO || *quantity > remaining {
+                return Err(EngineError::InvalidFill(*order_id));
+            }
+
+            // The first level entry with simulated remaining > 0 must be this order.
+            let mut cursor = self.level_head(node.side, node.price);
+            loop {
+                let current = cursor.ok_or(EngineError::FifoViolation(*order_id))?;
+                let candidate = self.orders.get(current).ok_or(EngineError::CorruptBook)?;
+                let candidate_remaining = simulated
+                    .get(&candidate.order.id)
+                    .copied()
+                    .unwrap_or(candidate.order.remaining);
+                if candidate_remaining.is_zero() {
+                    cursor = candidate.next;
+                    continue;
+                }
+                if candidate.order.id != *order_id {
+                    return Err(EngineError::FifoViolation(*order_id));
+                }
+                break;
+            }
+
+            simulated.insert(*order_id, remaining - *quantity);
+        }
+        Ok(())
+    }
+
+    /// Replay primitive: consume `quantity` from the front resting order `maker_order_id`.
+    ///
+    /// This does not search for counterparties; the fill was decided when the transaction was
+    /// prepared. Removes the order when it reaches zero.
+    pub fn apply_fill(
+        &mut self,
+        maker_order_id: u64,
+        quantity: Decimal,
+    ) -> Result<(), EngineError> {
+        self.validate_fills(&[(maker_order_id, quantity)])?;
+        let key = self
+            .order_map
+            .get(&maker_order_id)
+            .copied()
+            .ok_or(EngineError::InvalidFill(maker_order_id))?;
+
+        let (side, price, filled) = {
+            let node = self.orders.get_mut(key).ok_or(EngineError::CorruptBook)?;
+            node.order.remaining -= quantity;
+            (node.side, node.price, node.order.is_filled())
+        };
+
+        match side {
+            Side::Buy => {
+                if let Some(level) = self.bids.get_mut(&Reverse(price)) {
+                    level.total_qty -= quantity;
+                }
+            }
+            Side::Sell => {
+                if let Some(level) = self.asks.get_mut(&price) {
+                    level.total_qty -= quantity;
+                }
+            }
+        }
+
+        if filled {
+            let _ = self.remove_order_key(key);
+        }
+        Ok(())
+    }
+
     // ── Private matching helpers ────────────────────────────────────────────
 
     /// Inner loop for a Buy taker: consume resting asks from lowest to highest.
@@ -270,9 +462,9 @@ impl OrderBook {
             trades.push(Trade {
                 maker_order_id: maker_id,
                 taker_order_id: taker.id,
-                symbol:         taker.symbol.clone(),
-                price:          best_ask, // execution at the maker's (ask) price
-                amount:         fill_qty,
+                symbol: taker.symbol.clone(),
+                price: best_ask, // execution at the maker's (ask) price
+                amount: fill_qty,
             });
 
             if maker_filled {
@@ -328,9 +520,9 @@ impl OrderBook {
             trades.push(Trade {
                 maker_order_id: maker_id,
                 taker_order_id: taker.id,
-                symbol:         taker.symbol.clone(),
-                price:          best_bid, // execution at the maker's (bid) price
-                amount:         fill_qty,
+                symbol: taker.symbol.clone(),
+                price: best_bid, // execution at the maker's (bid) price
+                amount: fill_qty,
             });
 
             if maker_filled {
@@ -971,7 +1163,9 @@ mod tests {
         let mut book = OrderBook::new();
         book.add_order(sell_user(1, 7, dec!(100), dec!(2))).unwrap();
 
-        let trades = book.match_order(buy_user(2, 7, dec!(100), dec!(1))).unwrap();
+        let trades = book
+            .match_order(buy_user(2, 7, dec!(100), dec!(1)))
+            .unwrap();
 
         assert!(trades.is_empty());
         assert_eq!(book.len(), 2);
@@ -984,7 +1178,9 @@ mod tests {
         let mut book = OrderBook::new();
         book.add_order(buy_user(1, 11, dec!(100), dec!(2))).unwrap();
 
-        let trades = book.match_order(sell_user(2, 11, dec!(100), dec!(1))).unwrap();
+        let trades = book
+            .match_order(sell_user(2, 11, dec!(100), dec!(1)))
+            .unwrap();
 
         assert!(trades.is_empty());
         assert_eq!(book.len(), 2);
@@ -995,10 +1191,14 @@ mod tests {
     #[test]
     fn stp_buy_matches_others_then_stops_before_self_level() {
         let mut book = OrderBook::new();
-        book.add_order(sell_user(1, 21, dec!(100), dec!(1))).unwrap();
-        book.add_order(sell_user(2, 42, dec!(101), dec!(1))).unwrap();
+        book.add_order(sell_user(1, 21, dec!(100), dec!(1)))
+            .unwrap();
+        book.add_order(sell_user(2, 42, dec!(101), dec!(1)))
+            .unwrap();
 
-        let trades = book.match_order(buy_user(3, 42, dec!(101), dec!(2))).unwrap();
+        let trades = book
+            .match_order(buy_user(3, 42, dec!(101), dec!(2)))
+            .unwrap();
 
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].maker_order_id, 1);
@@ -1014,7 +1214,9 @@ mod tests {
         book.add_order(buy_user(1, 31, dec!(101), dec!(1))).unwrap();
         book.add_order(buy_user(2, 55, dec!(100), dec!(1))).unwrap();
 
-        let trades = book.match_order(sell_user(3, 55, dec!(100), dec!(2))).unwrap();
+        let trades = book
+            .match_order(sell_user(3, 55, dec!(100), dec!(2)))
+            .unwrap();
 
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].maker_order_id, 1);

@@ -130,9 +130,8 @@ pub async fn deposit_handler(
         .parse()
         .map_err(|_| bad_request("amount must be a valid decimal string"))?;
 
-    if amount <= Decimal::ZERO {
-        return Err(bad_request("amount must be greater than 0"));
-    }
+    // PLAN-06: positive, scale <= 8 and within range, rejected before any DB/ledger write.
+    crate::money::validate_positive(&amount).map_err(|e| bad_request(&e.to_string()))?;
 
     let row: Option<(Decimal,)> = sqlx::query_as(
         "UPDATE balances
@@ -186,9 +185,8 @@ pub async fn withdraw_handler(
         .parse()
         .map_err(|_| bad_request("amount must be a valid decimal string"))?;
 
-    if amount <= Decimal::ZERO {
-        return Err(bad_request("amount must be greater than 0"));
-    }
+    // PLAN-06: positive, scale <= 8 and within range, rejected before any DB/ledger write.
+    crate::money::validate_positive(&amount).map_err(|e| bad_request(&e.to_string()))?;
 
     let row: Option<(Decimal,)> = sqlx::query_as(
         "UPDATE balances
@@ -257,9 +255,8 @@ pub async fn transfer_handler(
         .parse()
         .map_err(|_| bad_request("amount must be a valid decimal string"))?;
 
-    if amount <= Decimal::ZERO {
-        return Err(bad_request("amount must be greater than 0"));
-    }
+    // PLAN-06: positive, scale <= 8 and within range, rejected before any DB/ledger write.
+    crate::money::validate_positive(&amount).map_err(|e| bad_request(&e.to_string()))?;
 
     if let Some(asset_raw) = body.asset.as_deref() {
         let asset = normalized_required_asset(asset_raw)?;

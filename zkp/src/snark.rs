@@ -9,16 +9,22 @@ use ark_r1cs_std::{
     fields::fp::FpVar,
     prelude::{AllocVar, EqGadget},
 };
-use ark_relations::{ns, r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError}};
+use ark_relations::{
+    ns,
+    r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError},
+};
 use ark_sponge::{constraints::CryptographicSpongeVar, poseidon::constraints::PoseidonSpongeVar};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rand::{rngs::StdRng, SeedableRng};
 use rust_decimal::Decimal;
 use std::sync::OnceLock;
 
+use crate::amount::{decimal_to_units, AmountError};
 use crate::poseidon::poseidon_parameters;
 
-const BALANCE_SCALE: u32 = 8;
+// LEGACY: this membership circuit still commits `P(user_id, balance)` (format 1 leaf,
+// no domain tag/context) and uses the non-trusted seed-42 Groth16 setup. It is NOT bound
+// to format-2 tree roots.
 
 #[derive(Debug, Clone)]
 pub struct MembershipProofInput {
@@ -66,11 +72,16 @@ struct MembershipCircuit {
 impl ConstraintSynthesizer<Fr> for MembershipCircuit {
     fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
         let leaf_commitment_public =
-            FpVar::<Fr>::new_input(ns!(cs, "leaf_commitment_public"), || Ok(self.leaf_commitment))?;
+            FpVar::<Fr>::new_input(ns!(cs, "leaf_commitment_public"), || {
+                Ok(self.leaf_commitment)
+            })?;
         let expected_user_id_public =
-            FpVar::<Fr>::new_input(ns!(cs, "expected_user_id_public"), || Ok(self.expected_user_id))?;
+            FpVar::<Fr>::new_input(ns!(cs, "expected_user_id_public"), || {
+                Ok(self.expected_user_id)
+            })?;
 
-        let user_id_witness = FpVar::<Fr>::new_witness(ns!(cs, "user_id_witness"), || Ok(self.user_id))?;
+        let user_id_witness =
+            FpVar::<Fr>::new_witness(ns!(cs, "user_id_witness"), || Ok(self.user_id))?;
         let leaf_balance_witness =
             FpVar::<Fr>::new_witness(ns!(cs, "leaf_balance_witness"), || Ok(self.leaf_balance))?;
 
@@ -87,7 +98,9 @@ impl ConstraintSynthesizer<Fr> for MembershipCircuit {
     }
 }
 
-pub fn create_membership_snark(input: MembershipProofInput) -> Result<SnarkProofPackage, SnarkError> {
+pub fn create_membership_snark(
+    input: MembershipProofInput,
+) -> Result<SnarkProofPackage, SnarkError> {
     let user_id_fr = Fr::from(input.user_id);
     let leaf_balance_fr = decimal_to_field(&input.leaf_balance)?;
     let leaf_commitment_fr = compute_leaf_commitment(user_id_fr, leaf_balance_fr);
@@ -145,25 +158,18 @@ fn membership_parameters() -> &'static ProvingKey<Bn254> {
     })
 }
 
+/// Exact conversion (no silent rescale/rounding); over-precision maps to `DecimalOverflow`.
 fn decimal_to_field(value: &Decimal) -> Result<Fr, SnarkError> {
-    if value.is_sign_negative() {
-        return Err(SnarkError::NegativeBalance);
+    match decimal_to_units(value) {
+        Ok(units) => Ok(Fr::from(units)),
+        Err(AmountError::Negative(_)) => Err(SnarkError::NegativeBalance),
+        Err(_) => Err(SnarkError::DecimalOverflow),
     }
-
-    let mut scaled = *value;
-    scaled.rescale(BALANCE_SCALE);
-    let mantissa = scaled.mantissa();
-    if mantissa < 0 {
-        return Err(SnarkError::NegativeBalance);
-    }
-
-    let as_u128 = u128::try_from(mantissa).map_err(|_| SnarkError::DecimalOverflow)?;
-    Ok(Fr::from(as_u128))
 }
 
 fn compute_leaf_commitment(user_id: Fr, leaf_balance: Fr) -> Fr {
-    use ark_sponge::CryptographicSponge;
     use ark_sponge::poseidon::PoseidonSponge;
+    use ark_sponge::CryptographicSponge;
 
     let mut sponge = PoseidonSponge::<Fr>::new(poseidon_parameters());
     sponge.absorb(&user_id);

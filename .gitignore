@@ -2,7 +2,6 @@
 /core/target/
 /zkp/target/
 **/*.rs.bk
-Cargo.lock
 
 # --- FRONTEND (Node.js & Svelte) ---
 node_modules/
@@ -56,8 +55,6 @@ coverage/
 dummy_feed.rs
 /report/
 
-# github
-/.github/workflows/
 
 # documents
 /docs

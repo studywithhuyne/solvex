@@ -15,4 +15,12 @@ pub enum EngineError {
     #[error("amount must be positive, got {0}")]
     InvalidAmount(Decimal),
 
+    #[error("fill for order {0} is invalid (unknown order or quantity out of range)")]
+    InvalidFill(u64),
+
+    #[error("fill for order {0} violates price-time priority")]
+    FifoViolation(u64),
+
+    #[error("order book index is inconsistent")]
+    CorruptBook,
 }

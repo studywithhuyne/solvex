@@ -1,8 +1,15 @@
-use rust_decimal::Decimal;
+//! Client-side (wasm) verifier for Merkle Sum Tree inclusion proofs, format version 2.
+//!
+//! Inputs are untrusted: sizes are limited, every number/hash is parsed strictly
+//! (ASCII only, canonical, no trimming) and legacy / unknown format versions are rejected
+//! rather than reinterpreted.
+
 use serde::{de::Error as _, Deserialize, Deserializer};
 
-use crate::poseidon::{poseidon_internal_hash, poseidon_leaf_hash};
-use crate::tree::HashBytes;
+use crate::amount::{checked_add_units, parse_amount_units, parse_sum_units};
+use crate::parse::{parse_hash_hex, parse_user_id_str, parse_user_id_u64};
+use crate::poseidon::{empty_subtree_hashes_v2, leaf_hash_v2, node_hash_v2};
+use crate::protocol::{TreeContext, MAX_PROOF_JSON_BYTES, MAX_TREE_DEPTH, PROTOCOL_VERSION};
 
 #[derive(Debug, Deserialize)]
 pub struct ProofStepPayload {
@@ -13,173 +20,212 @@ pub struct ProofStepPayload {
 
 #[derive(Debug, Deserialize)]
 pub struct ProofPayload {
-    #[serde(deserialize_with = "deserialize_u64_from_string_or_number")]
+    #[serde(deserialize_with = "deserialize_user_id")]
     pub user_id: u64,
     pub leaf_balance: String,
     pub root_hash: String,
     pub merkle_path: Vec<ProofStepPayload>,
+    /// Required; must equal `PROTOCOL_VERSION`. Missing means legacy and is rejected.
+    #[serde(default)]
+    pub format_version: Option<u64>,
+    /// Asset symbol bound into the tree; absent means the unscoped context.
+    #[serde(default)]
+    pub asset: Option<String>,
+    /// Snapshot id bound into the tree; absent means 0 (unscoped context).
+    #[serde(default, deserialize_with = "deserialize_optional_snapshot_id")]
+    pub snapshot_id: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct PublicInputsPayload {
     pub expected_root_hash: String,
-    #[serde(default, deserialize_with = "deserialize_optional_u64_from_string_or_number")]
+    #[serde(default, deserialize_with = "deserialize_optional_user_id")]
     pub expected_user_id: Option<u64>,
 }
 
-fn deserialize_u64_from_string_or_number<'de, D>(deserializer: D) -> Result<u64, D::Error>
+fn deserialize_user_id<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = serde_json::Value::deserialize(deserializer)?;
-    parse_u64_value(&value).ok_or_else(|| D::Error::custom("expected u64 as number or decimal string"))
+    parse_user_id_value(&value)
+        .ok_or_else(|| D::Error::custom("expected canonical user_id in 1..=i64::MAX"))
 }
 
-fn deserialize_optional_u64_from_string_or_number<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+fn deserialize_optional_user_id<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
     match value {
-        None => Ok(None),
-        Some(v) => parse_u64_value(&v)
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => parse_user_id_value(&v)
             .map(Some)
-            .ok_or_else(|| D::Error::custom("expected optional u64 as number or decimal string")),
+            .ok_or_else(|| D::Error::custom("expected canonical user_id in 1..=i64::MAX")),
     }
 }
 
-fn parse_u64_value(value: &serde_json::Value) -> Option<u64> {
+fn deserialize_optional_snapshot_id<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
     match value {
-        serde_json::Value::Number(num) => num.as_u64(),
-        serde_json::Value::String(s) => s.trim().parse::<u64>().ok(),
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => parse_snapshot_id_value(&v)
+            .map(Some)
+            .ok_or_else(|| D::Error::custom("expected canonical snapshot_id")),
+    }
+}
+
+fn parse_user_id_value(value: &serde_json::Value) -> Option<u64> {
+    match value {
+        serde_json::Value::Number(num) => num.as_u64().and_then(|n| parse_user_id_u64(n).ok()),
+        serde_json::Value::String(s) => parse_user_id_str(s).ok(),
         _ => None,
     }
 }
 
-pub fn verify_proof_json(proof_json: &str, public_inputs_json: &str) -> bool {
-    let proof: ProofPayload = match serde_json::from_str(proof_json) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let public_inputs: PublicInputsPayload = match serde_json::from_str(public_inputs_json) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
+fn parse_snapshot_id_value(value: &serde_json::Value) -> Option<u64> {
+    match value {
+        serde_json::Value::Number(num) => num.as_u64(),
+        serde_json::Value::String(s) => {
+            let canonical = !s.is_empty()
+                && s.len() <= 20
+                && s.bytes().all(|b| b.is_ascii_digit())
+                && (s.len() == 1 || !s.starts_with('0'));
+            if canonical {
+                s.parse::<u64>().ok()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
 
-    verify_proof_payload(&proof, &public_inputs).unwrap_or(false)
+/// Returns true only if the proof verifies. See `verify_proof_detailed` for the reason.
+pub fn verify_proof_json(proof_json: &str, public_inputs_json: &str) -> bool {
+    verify_proof_detailed(proof_json, public_inputs_json).is_ok()
+}
+
+/// Verifies a proof; `Err` carries a human readable rejection reason.
+pub fn verify_proof_detailed(proof_json: &str, public_inputs_json: &str) -> Result<(), String> {
+    if proof_json.len() > MAX_PROOF_JSON_BYTES || public_inputs_json.len() > MAX_PROOF_JSON_BYTES {
+        return Err("input exceeds size limit".to_string());
+    }
+
+    let proof: ProofPayload =
+        serde_json::from_str(proof_json).map_err(|e| format!("malformed proof JSON: {e}"))?;
+    let public_inputs: PublicInputsPayload = serde_json::from_str(public_inputs_json)
+        .map_err(|e| format!("malformed public inputs JSON: {e}"))?;
+
+    verify_proof_payload(&proof, &public_inputs)
 }
 
 fn verify_proof_payload(
     proof: &ProofPayload,
     public_inputs: &PublicInputsPayload,
-) -> Result<bool, String> {
+) -> Result<(), String> {
+    match proof.format_version {
+        Some(v) if v == u64::from(PROTOCOL_VERSION) => {}
+        Some(v) => return Err(format!("unsupported format_version {v}")),
+        None => {
+            return Err("missing format_version: legacy (v1) proofs are not accepted".to_string())
+        }
+    }
+
+    let context = match &proof.asset {
+        Some(asset) => {
+            TreeContext::new(asset, proof.snapshot_id.unwrap_or(0)).map_err(|e| e.to_string())?
+        }
+        None if proof.snapshot_id.unwrap_or(0) == 0 => TreeContext::unscoped(),
+        None => return Err("snapshot_id requires asset".to_string()),
+    };
+
     if let Some(expected_user_id) = public_inputs.expected_user_id {
         if expected_user_id != proof.user_id {
-            return Ok(false);
+            return Err("user_id does not match expected_user_id".to_string());
         }
     }
 
-    let leaf_balance = parse_decimal(&proof.leaf_balance)?;
+    if proof.merkle_path.len() > MAX_TREE_DEPTH {
+        return Err(format!("merkle path longer than {MAX_TREE_DEPTH}"));
+    }
 
-    let mut current_hash = poseidon_leaf_hash(proof.user_id, &leaf_balance).map_err(|e| e.to_string())?;
-    let mut current_balance = leaf_balance;
+    let leaf_units = parse_amount_units(&proof.leaf_balance).map_err(|e| e.to_string())?;
+    let mut current_hash =
+        leaf_hash_v2(&context, proof.user_id, leaf_units).map_err(|e| e.to_string())?;
+    let mut current_units = leaf_units;
 
-    for step in &proof.merkle_path {
-        let sibling_hash = parse_hash_hex(&step.sibling_hash)?;
-        let sibling_balance = parse_decimal(&step.sibling_balance)?;
+    let empty_hashes =
+        empty_subtree_hashes_v2(&context, proof.merkle_path.len()).map_err(|e| e.to_string())?;
 
-        if sibling_balance.is_sign_negative() {
-            return Ok(false);
+    for (level, step) in proof.merkle_path.iter().enumerate() {
+        let sibling_hash = parse_hash_hex(&step.sibling_hash).map_err(|e| e.to_string())?;
+        let sibling_units = parse_sum_units(&step.sibling_balance).map_err(|e| e.to_string())?;
+
+        // Padding subtrees carry no money: a sibling equal to the canonical empty
+        // subtree hash of this level must have a zero sum.
+        if empty_hashes.get(level) == Some(&sibling_hash) && sibling_units != 0 {
+            return Err("padding sibling carries a non-zero balance".to_string());
         }
 
-        if step.sibling_is_left {
-            current_hash = poseidon_internal_hash(
-                &sibling_hash,
-                &current_hash,
-                &sibling_balance,
-                &current_balance,
-            )
-            .map_err(|e| e.to_string())?;
-            current_balance = sibling_balance
-                .checked_add(current_balance)
-                .ok_or_else(|| "balance overflow while recomputing path".to_string())?;
+        current_hash = if step.sibling_is_left {
+            node_hash_v2(&sibling_hash, &current_hash, sibling_units, current_units)
         } else {
-            current_hash = poseidon_internal_hash(
-                &current_hash,
-                &sibling_hash,
-                &current_balance,
-                &sibling_balance,
-            )
-            .map_err(|e| e.to_string())?;
-            current_balance = current_balance
-                .checked_add(sibling_balance)
-                .ok_or_else(|| "balance overflow while recomputing path".to_string())?;
+            node_hash_v2(&current_hash, &sibling_hash, current_units, sibling_units)
         }
+        .map_err(|e| e.to_string())?;
+        current_units =
+            checked_add_units(current_units, sibling_units).map_err(|e| e.to_string())?;
     }
 
-    let declared_root_hash = parse_hash_hex(&proof.root_hash)?;
-    let expected_root_hash = parse_hash_hex(&public_inputs.expected_root_hash)?;
+    let declared_root_hash = parse_hash_hex(&proof.root_hash).map_err(|e| e.to_string())?;
+    let expected_root_hash =
+        parse_hash_hex(&public_inputs.expected_root_hash).map_err(|e| e.to_string())?;
 
-    let root_match = current_hash == declared_root_hash && current_hash == expected_root_hash;
-
-    // Keep current_balance calculation in-path for hash consistency checks in
-    // Merkle Sum Tree, but do not enforce or expose any exchange amount values.
-    let _ = current_balance;
-
-    Ok(root_match)
-}
-
-fn parse_hash_hex(value: &str) -> Result<HashBytes, String> {
-    let normalized = value.trim();
-    if normalized.len() != 64 {
-        return Err("hash must be 64 hex chars".to_string());
+    if current_hash == declared_root_hash && current_hash == expected_root_hash {
+        Ok(())
+    } else {
+        Err("root hash mismatch".to_string())
     }
-
-    let mut out = [0u8; 32];
-    for i in 0..32 {
-        let pair = &normalized[(i * 2)..(i * 2 + 2)];
-        out[i] = u8::from_str_radix(pair, 16).map_err(|_| "invalid hex hash".to_string())?;
-    }
-    Ok(out)
-}
-
-fn parse_decimal(value: &str) -> Result<Decimal, String> {
-    value
-        .parse::<Decimal>()
-        .map_err(|_| format!("invalid decimal value: {value}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::verify_proof_json;
-    use crate::tree::{build_poseidon_merkle_sum_tree, BalanceSnapshot};
+    use super::{verify_proof_detailed, verify_proof_json};
+    use crate::parse::hash_to_hex;
+    use crate::protocol::TreeContext;
+    use crate::tree::{
+        build_poseidon_merkle_sum_tree, build_poseidon_merkle_sum_tree_with_context,
+        BalanceSnapshot, MerkleProof,
+    };
     use rust_decimal_macros::dec;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
-    fn hash_to_hex(bytes: &[u8; 32]) -> String {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut out = String::with_capacity(64);
-        for byte in bytes {
-            out.push(HEX[(byte >> 4) as usize] as char);
-            out.push(HEX[(byte & 0x0f) as usize] as char);
-        }
-        out
+    fn snapshots3() -> Vec<BalanceSnapshot> {
+        vec![
+            BalanceSnapshot {
+                user_id: 1,
+                balance: dec!(10),
+            },
+            BalanceSnapshot {
+                user_id: 2,
+                balance: dec!(7.5),
+            },
+            BalanceSnapshot {
+                user_id: 3,
+                balance: dec!(3.25),
+            },
+        ]
     }
 
-    #[test]
-    fn verify_proof_json_accepts_valid_merkle_path() {
-        let snapshots = vec![
-            BalanceSnapshot { user_id: 1, balance: dec!(10) },
-            BalanceSnapshot { user_id: 2, balance: dec!(7.5) },
-            BalanceSnapshot { user_id: 3, balance: dec!(3.25) },
-        ];
-
-        let tree = build_poseidon_merkle_sum_tree(&snapshots).expect("tree build must succeed");
-        let proof = tree.generate_proof(1).expect("proof generation must succeed");
-
-        let proof_json = json!({
-            "user_id": snapshots[1].user_id,
-            "leaf_balance": snapshots[1].balance.to_string(),
+    fn proof_value(proof: &MerkleProof, user_id: u64, balance: &str) -> Value {
+        json!({
+            "format_version": proof.format_version,
+            "user_id": user_id,
+            "leaf_balance": balance,
             "root_hash": hash_to_hex(&proof.root.hash),
             "merkle_path": proof.path.iter().map(|step| json!({
                 "sibling_hash": hash_to_hex(&step.sibling_hash),
@@ -187,20 +233,41 @@ mod tests {
                 "sibling_is_left": step.sibling_is_left,
             })).collect::<Vec<_>>(),
         })
-        .to_string();
+    }
 
-        let public_inputs_json = json!({
+    fn inputs_value(proof: &MerkleProof, user_id: u64) -> Value {
+        json!({
             "expected_root_hash": hash_to_hex(&proof.root.hash),
-            "expected_user_id": snapshots[1].user_id,
+            "expected_user_id": user_id,
         })
-        .to_string();
+    }
 
-        assert!(verify_proof_json(&proof_json, &public_inputs_json));
+    fn verify(proof: &Value, inputs: &Value) -> Result<(), String> {
+        verify_proof_detailed(&proof.to_string(), &inputs.to_string())
+    }
+
+    #[test]
+    fn verify_proof_json_accepts_valid_merkle_path() {
+        let snapshots = snapshots3();
+        let tree = build_poseidon_merkle_sum_tree(&snapshots).expect("tree build must succeed");
+        for (i, snapshot) in snapshots.iter().enumerate() {
+            let proof = tree
+                .generate_proof(i)
+                .expect("proof generation must succeed");
+            let proof_json = proof_value(&proof, snapshot.user_id, &snapshot.balance.to_string());
+            let inputs = inputs_value(&proof, snapshot.user_id);
+            assert_eq!(verify(&proof_json, &inputs), Ok(()));
+            assert!(verify_proof_json(
+                &proof_json.to_string(),
+                &inputs.to_string()
+            ));
+        }
     }
 
     #[test]
     fn verify_proof_json_rejects_tampered_root_hash() {
         let proof_json = json!({
+            "format_version": 2,
             "user_id": 7,
             "leaf_balance": "10",
             "root_hash": "00".repeat(32),
@@ -218,65 +285,201 @@ mod tests {
     }
 
     #[test]
-    fn verify_proof_json_accepts_without_solvency_amount_inputs() {
+    fn verify_proof_json_accepts_string_user_id() {
         let snapshots = vec![
-            BalanceSnapshot { user_id: 1, balance: dec!(10) },
-            BalanceSnapshot { user_id: 2, balance: dec!(7.5) },
-            BalanceSnapshot { user_id: 3, balance: dec!(3.25) },
+            BalanceSnapshot {
+                user_id: 11,
+                balance: dec!(4.25),
+            },
+            BalanceSnapshot {
+                user_id: 22,
+                balance: dec!(8.5),
+            },
         ];
-
         let tree = build_poseidon_merkle_sum_tree(&snapshots).expect("tree build must succeed");
-        let proof = tree.generate_proof(0).expect("proof generation must succeed");
+        let proof = tree
+            .generate_proof(1)
+            .expect("proof generation must succeed");
 
-        let proof_json = json!({
-            "user_id": snapshots[0].user_id,
-            "leaf_balance": snapshots[0].balance.to_string(),
-            "root_hash": hash_to_hex(&proof.root.hash),
-            "merkle_path": proof.path.iter().map(|step| json!({
-                "sibling_hash": hash_to_hex(&step.sibling_hash),
-                "sibling_balance": step.sibling_balance.to_string(),
-                "sibling_is_left": step.sibling_is_left,
-            })).collect::<Vec<_>>(),
-        })
-        .to_string();
-
-        let public_inputs_json = json!({
-            "expected_root_hash": hash_to_hex(&proof.root.hash),
-            "expected_user_id": snapshots[0].user_id,
-        })
-        .to_string();
-
-        assert!(verify_proof_json(&proof_json, &public_inputs_json));
+        let mut proof_json = proof_value(&proof, 22, "8.5");
+        proof_json["user_id"] = json!("22");
+        let mut inputs = inputs_value(&proof, 22);
+        inputs["expected_user_id"] = json!("22");
+        assert_eq!(verify(&proof_json, &inputs), Ok(()));
     }
 
     #[test]
-    fn verify_proof_json_accepts_string_user_id() {
-        let snapshots = vec![
-            BalanceSnapshot { user_id: 11, balance: dec!(4.25) },
-            BalanceSnapshot { user_id: 22, balance: dec!(8.5) },
+    fn accepts_scoped_context_and_rejects_wrong_context() {
+        let ctx = TreeContext::new("USDT", 5).expect("ctx");
+        let tree = build_poseidon_merkle_sum_tree_with_context(&snapshots3(), &ctx).expect("tree");
+        let proof = tree.generate_proof(0).expect("proof");
+
+        let mut proof_json = proof_value(&proof, 1, "10");
+        let inputs = inputs_value(&proof, 1);
+        // Missing context => unscoped => different hashes.
+        assert!(verify(&proof_json, &inputs).is_err());
+
+        proof_json["asset"] = json!("USDT");
+        proof_json["snapshot_id"] = json!(5);
+        assert_eq!(verify(&proof_json, &inputs), Ok(()));
+
+        proof_json["snapshot_id"] = json!("6");
+        assert!(verify(&proof_json, &inputs).is_err());
+        proof_json["snapshot_id"] = json!(5);
+        proof_json["asset"] = json!("BTC");
+        assert!(verify(&proof_json, &inputs).is_err());
+    }
+
+    #[test]
+    fn rejects_legacy_and_unknown_versions() {
+        let tree = build_poseidon_merkle_sum_tree(&snapshots3()).expect("tree");
+        let proof = tree.generate_proof(0).expect("proof");
+        let inputs = inputs_value(&proof, 1);
+
+        let mut proof_json = proof_value(&proof, 1, "10");
+        proof_json["format_version"] = json!(1);
+        assert!(verify(&proof_json, &inputs).is_err());
+        proof_json["format_version"] = json!(3);
+        assert!(verify(&proof_json, &inputs).is_err());
+        proof_json
+            .as_object_mut()
+            .map(|o| o.remove("format_version"));
+        let err = verify(&proof_json, &inputs).expect_err("missing version");
+        assert!(err.contains("legacy"));
+    }
+
+    #[test]
+    fn rejects_tampered_values() {
+        let tree = build_poseidon_merkle_sum_tree(&snapshots3()).expect("tree");
+        let proof = tree.generate_proof(1).expect("proof");
+        let inputs = inputs_value(&proof, 2);
+        let good = proof_value(&proof, 2, "7.5");
+        assert_eq!(verify(&good, &inputs), Ok(()));
+
+        let mut bad = good.clone();
+        bad["leaf_balance"] = json!("7.6");
+        assert!(verify(&bad, &inputs).is_err());
+
+        let mut bad = good.clone();
+        bad["user_id"] = json!(3);
+        assert!(verify(&bad, &inputs).is_err());
+
+        let mut bad = good.clone();
+        bad["merkle_path"][0]["sibling_balance"] = json!("0");
+        assert!(verify(&bad, &inputs).is_err());
+
+        let mut bad = good.clone();
+        bad["merkle_path"][0]["sibling_is_left"] = json!(false);
+        assert!(verify(&bad, &inputs).is_err());
+
+        let wrong_user_inputs = inputs_value(&proof, 3);
+        assert!(verify(&good, &wrong_user_inputs).is_err());
+    }
+
+    #[test]
+    fn rejects_padding_sibling_with_money() {
+        // 3 leaves => padded to 4; user 3's sibling at level 0 is a padding leaf.
+        let tree = build_poseidon_merkle_sum_tree(&snapshots3()).expect("tree");
+        let proof = tree.generate_proof(2).expect("proof");
+        assert_eq!(proof.path[0].sibling_balance, dec!(0));
+        let inputs = inputs_value(&proof, 3);
+        let good = proof_value(&proof, 3, "3.25");
+        assert_eq!(verify(&good, &inputs), Ok(()));
+
+        let mut forged = good.clone();
+        forged["merkle_path"][0]["sibling_balance"] = json!("5");
+        let err = verify(&forged, &inputs).expect_err("padding with money");
+        assert!(err.contains("padding"));
+    }
+
+    #[test]
+    fn rejects_malformed_fields_without_panic() {
+        let tree = build_poseidon_merkle_sum_tree(&snapshots3()).expect("tree");
+        let proof = tree.generate_proof(1).expect("proof");
+        let inputs = inputs_value(&proof, 2);
+        let good = proof_value(&proof, 2, "7.5");
+
+        for balance in [
+            "",
+            " 7.5",
+            "7.5 ",
+            "+7.5",
+            "-7.5",
+            "07.5",
+            "7.",
+            "1e1",
+            "７.5",
+            "7.5é",
+            "9".repeat(100).as_str(),
+        ] {
+            let mut bad = good.clone();
+            bad["leaf_balance"] = json!(balance);
+            assert!(verify(&bad, &inputs).is_err(), "balance {balance:?}");
+        }
+
+        let sibling = hash_to_hex(&proof.path[0].sibling_hash);
+        let bad_hashes = [
+            format!(" {sibling}"),
+            format!("{sibling} "),
+            sibling[..62].to_string(),
+            format!("{sibling}00"),
+            "ff".repeat(32),
+            format!("1é{}", "1".repeat(61)),
+            "😀".repeat(16),
         ];
+        for hash in bad_hashes {
+            let mut bad = good.clone();
+            bad["merkle_path"][0]["sibling_hash"] = json!(hash);
+            assert!(verify(&bad, &inputs).is_err(), "hash {hash:?}");
+        }
 
-        let tree = build_poseidon_merkle_sum_tree(&snapshots).expect("tree build must succeed");
-        let proof = tree.generate_proof(1).expect("proof generation must succeed");
+        for user_id in [
+            json!(0),
+            json!("0"),
+            json!("02"),
+            json!(" 2"),
+            json!("+2"),
+            json!(-1),
+            json!(2.5),
+            json!(null),
+            json!("９"),
+        ] {
+            let mut bad = good.clone();
+            bad["user_id"] = user_id.clone();
+            assert!(verify(&bad, &inputs).is_err(), "user_id {user_id:?}");
+        }
+    }
 
-        let proof_json = json!({
-            "user_id": snapshots[1].user_id.to_string(),
-            "leaf_balance": snapshots[1].balance.to_string(),
-            "root_hash": hash_to_hex(&proof.root.hash),
-            "merkle_path": proof.path.iter().map(|step| json!({
-                "sibling_hash": hash_to_hex(&step.sibling_hash),
-                "sibling_balance": step.sibling_balance.to_string(),
-                "sibling_is_left": step.sibling_is_left,
-            })).collect::<Vec<_>>(),
-        })
-        .to_string();
+    #[test]
+    fn enforces_size_and_depth_limits() {
+        let tree = build_poseidon_merkle_sum_tree(&snapshots3()).expect("tree");
+        let proof = tree.generate_proof(1).expect("proof");
+        let inputs = inputs_value(&proof, 2);
 
-        let public_inputs_json = json!({
-            "expected_root_hash": hash_to_hex(&proof.root.hash),
-            "expected_user_id": snapshots[1].user_id.to_string(),
-        })
-        .to_string();
+        let mut deep = proof_value(&proof, 2, "7.5");
+        let step = deep["merkle_path"][0].clone();
+        deep["merkle_path"] = Value::Array(vec![step; 13]);
+        assert!(verify(&deep, &inputs)
+            .expect_err("depth")
+            .contains("longer"));
 
-        assert!(verify_proof_json(&proof_json, &public_inputs_json));
+        let huge = "x".repeat(70_000);
+        assert!(!verify_proof_json(&huge, &inputs.to_string()));
+        assert!(!verify_proof_json("", ""));
+        assert!(!verify_proof_json("{", "}"));
+    }
+
+    #[test]
+    fn single_and_empty_trees_verify() {
+        let tree = build_poseidon_merkle_sum_tree(&[BalanceSnapshot {
+            user_id: 9,
+            balance: dec!(1.5),
+        }])
+        .expect("tree");
+        let proof = tree.generate_proof(0).expect("proof");
+        assert_eq!(
+            verify(&proof_value(&proof, 9, "1.5"), &inputs_value(&proof, 9)),
+            Ok(())
+        );
     }
 }

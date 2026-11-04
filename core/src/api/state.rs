@@ -113,6 +113,13 @@ impl AppState {
         self.next_order_id.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Like `alloc_order_id`, but rejects IDs outside the SQL BIGINT domain (PLAN-06).
+    pub fn try_alloc_order_id(&self) -> Result<u64, crate::money::MoneyError> {
+        let id = self.alloc_order_id();
+        crate::money::id_to_sql(id)?;
+        Ok(id)
+    }
+
     /// Register an order → (user, symbol) mapping when a new order is submitted.
     #[inline]
     pub fn register_order_user(&self, order_id: u64, user_id: u64, symbol: String) {
