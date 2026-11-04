@@ -1,4 +1,4 @@
-# Brainstorm cải thiện CEX ZKP
+# Brainstorm cải thiện SolvEx (CEX ZKP)
 
 Ngày đánh giá: **01/10/2026**. Trạng thái: **đề xuất để thảo luận, chưa triển khai**.
 

@@ -2,7 +2,7 @@
 <p align="center">
   <img alt="logo" src="/web/public/icons/favicon.png" width="300" height="300" />
 
-  <h1 align="center">CEX ZKP</h1>
+  <h1 align="center">SolvEx</h1>
   <p align="center"><strong>High-performance Verifiable CEX &amp; Orderbook Matching Engine — Rust</strong></p>
 
   <p align="center">

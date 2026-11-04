@@ -112,7 +112,7 @@
       </h1>
       
       <p class="mx-auto mb-10 max-w-2xl text-base md:text-lg text-slate-400 leading-relaxed">
-        Experience JerryZK's micro-second latency matching engine with full cryptographic Proof of Solvency. 
+        Experience SolvEx's micro-second latency matching engine with full cryptographic Proof of Solvency. 
         Enjoy the deep liquidity of a Centralized Exchange while guaranteeing your digital assets are mathematically secure.
       </p>
 

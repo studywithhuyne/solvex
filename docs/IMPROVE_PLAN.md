@@ -1,4 +1,4 @@
-# Kế hoạch cải thiện CEX ZKP
+# Kế hoạch cải thiện SolvEx (CEX ZKP)
 
 Ngày lập: **10/10/2026**. Nguồn: [IMPROVEMENT.md](IMPROVEMENT.md).
 

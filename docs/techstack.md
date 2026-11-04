@@ -1,5 +1,5 @@
 # Tech Stack & Architecture Specification
-**Project:** High-Performance Verifiable CEX & Order Book Matching Engine
+**Project:** SolvEx — High-Performance Verifiable CEX & Order Book Matching Engine
 **Status:** Architecture locked. AI Assistant MUST strictly adhere to these libraries and design decisions.
 
 ## 0. Project Directory Structure (Monorepo)

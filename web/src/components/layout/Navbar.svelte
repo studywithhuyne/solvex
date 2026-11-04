@@ -38,7 +38,7 @@
   <div class="flex items-center justify-between gap-4">
     <!-- Brand -->
     <div class="flex items-center gap-3 shrink-0">
-      <p class="mono text-xs tracking-[0.18em] text-sky-300/80">JERRYZK</p>
+      <p class="mono text-xs tracking-[0.18em] text-sky-300/80">SOLVEX</p>
     </div>
 
     <!-- Navigation Links -->
